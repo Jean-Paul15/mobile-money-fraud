@@ -1,0 +1,75 @@
+# Notes de travail
+.api-notes.md
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.coverage
+htmlcov/
+
+# Secrets et configuration locale
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.crt
+credentials*.json
+
+# Modèles, données et sorties générées
+models/
+*.pkl
+*.joblib
+*.h5
+*.onnx
+outputs/
+data/*
+!data/sample/
+!data/sample/**
+mlflow-artifacts/
+mlflow-data/
+mlruns/
+mlflow.db
+*.db
+*.sqlite
+
+# Node / dashboard
+node_modules/
+dashboard-react/dist/
+dashboard-react/.vite/
+*.tsbuildinfo
+npm-debug.log*
+
+# Documents et archives
+*.pdf
+*.zip
+*.tar
+*.tar.gz
+*.7z
+*.rar
+*.pptx
+*.docx
+*.xlsx
+
+# Logs et temporaires
+*.log
+logs/
+*.tmp
+*.bak
+*.swp
+
+# Système et éditeurs
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.playwright-mcp/

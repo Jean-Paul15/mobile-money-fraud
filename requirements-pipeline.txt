@@ -1,0 +1,4 @@
+# Entraînement, suivi MLflow et supervision
+-r requirements.txt
+mlflow
+matplotlib

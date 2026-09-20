@@ -1,0 +1,22 @@
+groups:
+  - name: fraude_api
+    interval: 15s
+    rules:
+      - record: job:api_requests_per_second:rate1m
+        expr: sum(rate(api_requests_total[1m])) by (endpoint)
+
+      - record: job:api_decisions_per_second:rate1m
+        expr: sum(rate(api_decisions_total[1m])) by (endpoint, decision)
+
+      - record: job:api_latency_p95_seconds:rate5m
+        expr: histogram_quantile(0.95, sum(rate(api_latency_seconds_bucket[5m])) by (le, endpoint))
+
+      - record: job:api_latency_avg_seconds:rate5m
+        expr: sum(rate(api_latency_seconds_sum[5m])) by (endpoint) / clamp_min(sum(rate(api_latency_seconds_count[5m])) by (endpoint), 1)
+
+      - record: job:api_score_avg:rate5m
+        expr: sum(rate(api_score_value_sum[5m])) by (endpoint) / clamp_min(sum(rate(api_score_value_count[5m])) by (endpoint), 1)
+
+      - record: job:api_blocked_ratio:rate5m
+        expr: sum(rate(api_decisions_total{decision="BLOCKED"}[5m])) by (endpoint) / clamp_min(sum(rate(api_decisions_total[5m])) by (endpoint), 1)
+

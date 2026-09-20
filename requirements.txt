@@ -1,0 +1,10 @@
+# Dépendances d'exécution de l'API de scoring
+numpy
+pandas
+scikit-learn
+joblib
+fastapi
+uvicorn
+pydantic
+prometheus_client
+shap

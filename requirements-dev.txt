@@ -1,0 +1,6 @@
+# Tests et notebook
+-r requirements-pipeline.txt
+pytest
+httpx
+jupyter
+missingno
