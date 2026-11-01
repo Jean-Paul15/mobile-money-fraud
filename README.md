@@ -1,39 +1,52 @@
 # Mobile Money Fraud
 
-Détection de fraude sur des transactions Mobile Money : génération de données synthétiques, entraînement de modèles scikit-learn, API de scoring FastAPI et tableau de bord React de surveillance.
+Un service qui note chaque transaction Mobile Money entre 0 et 1, la bloque au-dessus de 0,5 et dit pourquoi, alors que la fraude y est si rare qu'un modèle naïf peut l'ignorer sans jamais se tromper.
 
-## Problème résolu
+## Ce que ça apporte
 
-Les transactions Mobile Money (transferts, paiements, retraits, recharges, paiement de factures) sont exposées à plusieurs schémas de fraude : prise de contrôle de compte, carte volée, réseau de mules, identité synthétique, smishing. La fraude est très rare (0,15 % dans les données synthétiques du projet), ce qui impose un traitement adapté du déséquilibre de classes, un découpage temporel strict pour éviter les fuites d'information, et des métriques adaptées (AUC-PR, rappel à FPR fixé, lift).
+- **Une évaluation sans fuite temporelle.** Le jeu est coupé au 2025-07-01 avant tout calcul de features. Les moyennes par émetteur sont apprises sur l'entraînement puis réutilisées telles quelles sur le test. La fenêtre glissante de 24 heures exclut la transaction courante (`closed="left"`).
+- **Des décisions expliquées.** Chaque réponse de `/score` contient les facteurs de risque calculés par SHAP, traduits en libellés lisibles pour un analyste.
+- **Une chaîne observable de bout en bout.** Le service expose des métriques Prometheus, un dashboard Grafana provisionné, un calcul de dérive PSI sur les scores et un suivi MLflow facultatif.
 
-Le dépôt couvre la chaîne complète : données, features, modèles, service de scoring explicable, supervision.
+## Le problème
 
-## Fonctionnalités
+Un transfert de 250 000 FCFA à 3 h du matin, par USSD, depuis un compte ouvert il y a cinq jours et dont la SIM vient de changer. Légitime ou prise de contrôle de compte ? Une règle fixe hésite. Dans les données synthétiques du projet, la fraude représente 0,15 % des transactions. Un modèle qui répond toujours « légitime » obtient donc 99,85 % d'exactitude et ne sert à rien. Le dépôt traite ce déséquilibre : pondération des classes, découpage temporel strict, et métriques faites pour la fraude (AUC-PR, rappel à taux de faux positifs de 1 %, lift, analyse coût-bénéfice).
 
-- Générateur de transactions synthétiques pour 8 pays de l'UEMOA, 3 opérateurs, 5 types d'opérations et 5 scénarios de fraude injectés (`src/data/generator.py`).
-- Feature engineering avec paramètres appris sur l'entraînement et réappliqués au test (`src/features/engineering.py`).
-- Entraînement de quatre modèles : Isolation Forest, Random Forest, régression logistique, VotingClassifier (`src/models/train.py`).
-- Métriques orientées fraude : AUC-ROC, AUC-PR, rappel à FPR 1 %, précision à rappel fixé, lift, analyse coût-bénéfice (`src/evaluation/metrics.py`).
-- Suivi des expériences MLflow (tracking, registry) lorsqu'un serveur est joignable ; l'entraînement fonctionne sans.
-- Surveillance de dérive par PSI sur la distribution des scores (`src/evaluation/monitor.py`).
-- API FastAPI : `/score`, `/score/batch` (100 transactions maximum), `/health`, `/metrics` (Prometheus). Le seuil de blocage est fixé à 0,5 dans `api/main.py`. Les facteurs de risque sont calculés par SHAP lorsque le paquet `shap` est installé.
-- Tableau de bord React (Vite, TypeScript, Tailwind) : flux de transactions simulé côté navigateur et scoré par l'API, alertes, fiche d'investigation, retours analyste, centre d'audit des transactions bloquées avec export CSV.
-- Supervision : Prometheus (règles d'enregistrement) et Grafana (dashboard provisionné).
+## Démarrer en cinq minutes
 
-## Architecture
+Prérequis : Python 3.11 ou supérieur, Node.js 20 ou supérieur pour le dashboard.
+
+```bash
+pip install -r requirements-dev.txt
+DATA_DIR=data/sample python scripts/train_pipeline.py
+uvicorn api.main:app --port 8002
+curl -X POST http://localhost:8002/score -H "Content-Type: application/json" -d '{"amount": 250000, "transaction_type": "transfer", "channel": "ussd", "operator": "MTN", "timestamp": "2025-08-02T03:10:00", "sender_account_age": 5, "sender_sim_swap_recent": 1}'
+cd dashboard-react && npm ci && npm run dev
+```
+
+L'échantillon versionné compte 6 000 transactions dont 9 fraudes : il suffit pour lancer la chaîne, pas pour juger le modèle. Pour le jeu complet de 500 000 transactions, lancez `python -m src.data.generator`, puis l'entraînement sans `DATA_DIR`. Le dashboard s'ouvre sur `http://localhost:5173` et appelle l'API via un proxy `/api`. Pour toute la pile (API, dashboard, MLflow, Prometheus, Grafana), `docker compose up --build` après avoir défini `GRAFANA_ADMIN_PASSWORD` dans `.env` (modèle : `.env.example`).
+
+## Comment ça marche
 
 ```mermaid
 flowchart LR
-    G[Générateur synthétique] --> F[Feature engineering]
-    F --> T[Entraînement sklearn]
-    T -->|models/*.pkl| A[API FastAPI]
-    T -.-> M[MLflow]
+    G[Générateur synthétique] --> S{Découpage temporel<br/>train avant 2025-07-01}
+    S --> F[Feature engineering<br/>paramètres appris sur le train]
+    F --> T[Entraînement scikit-learn]
+    T -->|RandomForest.pkl + metadata.pkl| A[API FastAPI<br/>score, décision, SHAP]
+    T -.->|si serveur joignable| M[MLflow]
     D[Dashboard React] -->|/api/score| A
     A -->|/metrics| P[Prometheus]
     P --> GR[Grafana]
 ```
 
-Le modèle servi par l'API est le Random Forest (`models/RandomForest.pkl`), accompagné de `models/metadata.pkl` (liste des features et histogramme de référence des scores).
+Trois choix structurent le dépôt.
+
+**Couper avant de transformer.** Une moyenne calculée sur tout le jeu laisse le futur filtrer dans le passé et gonfle les scores. Le découpage vient donc en premier. `engineer_features_train` renvoie les paramètres appris (moyennes par émetteur, première transaction par compte) et `engineer_features_test` ne fait que les relire.
+
+**Un seul modèle servi, quatre entraînés.** Isolation Forest, Random Forest, régression logistique et un VotingClassifier sont comparés à l'entraînement. L'API charge uniquement le Random Forest, avec un `metadata.pkl` qui porte la liste des features et l'histogramme de référence des scores. Le service reste simple, et la dérive se mesure par PSI contre cette référence.
+
+**Un détecteur isolé de l'API.** `src/inference.py` reconstruit les features d'une transaction, prédit et explique. `api/main.py` s'occupe du HTTP, des métriques et de la décision. Le détecteur se teste sans serveur. Si `shap` manque, l'explication renvoie une liste vide et le score reste servi.
 
 ## Stack technique
 
@@ -47,120 +60,42 @@ Le modèle servi par l'API est le Random Forest (`models/RandomForest.pkl`), acc
 | Déploiement | Docker, Docker Compose, Nginx |
 | Tests | pytest |
 
-## Installation
-
-Prérequis : Python 3.11 ou supérieur, Node.js 20 ou supérieur (dashboard), Docker (optionnel).
-
-```bash
-git clone <url-du-depot>
-cd mobile-money-fraud
-python -m venv .venv
-source .venv/bin/activate          # Windows : .venv\Scripts\activate
-pip install -r requirements-dev.txt
-cp .env.example .env
-```
-
-## Usage
-
-### 1. Générer les données
-
-```bash
-# Jeu complet (500 000 transactions, écrit dans outputs/, ignoré par git)
-python -m src.data.generator
-
-# Petit jeu de test
-python -m src.data.generator --n-transactions 6000 --n-accounts 600 --output data/sample
-```
-
-L'échantillon versionné dans `data/sample/` provient de la seconde commande. Les données sont entièrement synthétiques.
-
-### 2. Entraîner les modèles
-
-```bash
-python scripts/train_pipeline.py
-```
-
-Le script lit `outputs/transactions.csv` et `outputs/accounts.csv` (ou le dossier indiqué par `DATA_DIR`) et écrit les modèles dans `models/`. Avec l'échantillon : `DATA_DIR=data/sample python scripts/train_pipeline.py`. Le découpage temporel du pipeline est train avant le 2025-07-01, test à partir de cette date ; un jeu trop petit contient très peu de fraudes et donne des métriques peu significatives.
-
-Suivi MLflow facultatif :
-
-```bash
-export MLFLOW_TRACKING_URI=http://localhost:5002
-python scripts/register_mlflow.py
-```
-
-### 3. Lancer l'API
-
-```bash
-uvicorn api.main:app --port 8002
-curl -X POST http://localhost:8002/score \
-  -H "Content-Type: application/json" \
-  -d '{"amount": 250000, "transaction_type": "transfer", "channel": "ussd", "operator": "MTN", "timestamp": "2025-08-02T03:10:00", "sender_account_age": 5, "sender_sim_swap_recent": 1}'
-```
-
-### 4. Lancer le tableau de bord
-
-```bash
-cd dashboard-react
-npm ci
-npm run dev        # http://localhost:5173, proxy /api vers localhost:8002
-```
-
-### 5. Pile complète avec Docker
-
-```bash
-# models/ doit exister (étape 2) ; GRAFANA_ADMIN_PASSWORD doit être défini dans .env
-docker compose up --build
-```
-
-| Service | Port |
-|---|---|
-| API | 8002 |
-| Dashboard | 8502 |
-| MLflow | 5002 |
-| Prometheus | 9090 |
-| Grafana | 3001 |
-
 ## Structure du dépôt
 
 ```
-api/                 API FastAPI (main.py)
+api/                 API FastAPI : /score, /score/batch (100 max), /health, /metrics
 src/
-  data/              générateur de données synthétiques
-  features/          feature engineering
+  data/              générateur synthétique : 8 pays UEMOA, 3 opérateurs, 5 scénarios de fraude
+  features/          feature engineering sans fuite
   models/            entraînement des modèles
-  evaluation/        métriques, monitoring PSI
-  inference.py       détecteur utilisé par l'API (chargement, features, SHAP)
+  evaluation/        métriques orientées fraude, PSI
+  inference.py       détecteur utilisé par l'API (features, score, SHAP)
 scripts/             pipeline d'entraînement, enregistrement MLflow
 notebooks/           exploration et modélisation
-dashboard-react/     tableau de bord React
+dashboard-react/     tableau de bord de surveillance
 monitoring/          Prometheus et Grafana
-docker/              Dockerfiles API et dashboard, configuration Nginx
-data/sample/         échantillon synthétique (6 000 transactions)
-tests/               tests pytest
+docker/              Dockerfiles et configuration Nginx
+data/sample/         échantillon synthétique de 6 000 transactions
+tests/               tests pytest (python -m pytest tests)
 ```
 
-## Tests
+Les tests de l'API et de l'inférence sont ignorés tant que `models/RandomForest.pkl` n'existe pas : entraînez d'abord. `tests/test_monitor.py` demande `mlflow`.
 
-```bash
-python -m pytest tests
-```
+## Limites et suite
 
-Les tests de l'API et de l'inférence sont ignorés (`skip`) tant que `models/RandomForest.pkl` est absent ; entraîner les modèles au préalable pour les exécuter. `tests/test_monitor.py` requiert `mlflow`.
+Le périmètre est un choix : montrer une chaîne de détection complète et propre sur des données que je peux publier.
 
-## Limites connues
-
-- Les données sont synthétiques ; les performances obtenues sur elles ne préjugent pas de celles sur des flux réels.
-- Le dashboard génère ses transactions dans le navigateur et ne se connecte pas à une source de production ; les retours analyste ne sont conservés qu'en mémoire, sans persistance.
-- Le seuil de décision (0,5) est codé en dur dans l'API.
-- L'API n'a pas d'authentification et la configuration CORS ne couvre que les ports de développement locaux.
-- Les modèles ne sont pas versionnés dans le dépôt : ils doivent être régénérés.
-- Le dashboard n'a pas de tests automatisés.
+- Les données sont synthétiques. Les performances obtenues ne disent rien d'un flux réel, et c'est assumé.
+- Le dashboard génère ses transactions dans le navigateur. Les retours analyste restent en mémoire.
+- Le seuil de 0,5 est fixé dans l'API. Le rendre configurable est la suite la plus directe.
+- L'API n'a pas d'authentification et son CORS ne couvre que les ports de développement locaux.
+- Les modèles ne sont pas versionnés : `scripts/train_pipeline.py` les régénère.
+- Le dashboard n'a pas encore de tests automatisés.
 
 ## Licence
 
-Licence : tous droits réservés. Voir le fichier `LICENSE`.
+Tous droits réservés. Lecture du code autorisée pour évaluation. Voir `LICENSE`.
 
 ## Contact
 
-Jean-Paul ADOGLI, étudiant ingénieur en data science et big data, GitHub : [Jean-Paul15](https://github.com/Jean-Paul15).
+Jean-Paul ADOGLI, étudiant ingénieur en data science et big data. GitHub : [Jean-Paul15](https://github.com/Jean-Paul15).
